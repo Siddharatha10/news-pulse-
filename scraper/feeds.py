@@ -13,9 +13,10 @@ import re
 from datetime import datetime, timezone
 
 import feedparser
+import requests
 from dateutil import parser as date_parser
 
-from config import FEEDS, USER_AGENT
+from config import FEEDS, FETCH_TIMEOUT_SECONDS, USER_AGENT
 
 TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
@@ -74,10 +75,27 @@ def _parse_published(entry):
 def fetch_feed(source_name, feed_url):
     """
     Returns a list of normalized article dicts for a single feed.
-    A feed that fails to load (network issue, malformed XML) is skipped
-    rather than crashing the whole run.
+    A feed that fails to load (network issue, malformed XML, timeout)
+    is skipped rather than crashing - or hanging - the whole run.
+
+    feedparser.parse() can be handed a URL directly, but in this
+    version it has no timeout support of its own: a feed server that
+    stalls mid-response would block the pipeline indefinitely. Fetching
+    the bytes ourselves with requests (which does support a timeout)
+    and handing feedparser the already-downloaded content avoids that.
     """
-    parsed = feedparser.parse(feed_url, agent=USER_AGENT)
+    try:
+        response = requests.get(
+            feed_url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=FETCH_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"  [warn] could not fetch feed for {source_name}: {exc}")
+        return []
+
+    parsed = feedparser.parse(response.content)
 
     if parsed.bozo and not parsed.entries:
         print(f"  [warn] could not parse feed for {source_name}: {parsed.bozo_exception}")

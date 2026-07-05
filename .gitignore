@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+*.pyc
+
+# Environment files (never commit real secrets/config)
+.env
+.env.local
+
+# Database
+db/*.db
+db/*.db-shm
+db/*.db-wal
+
+# Build output
+.next/
+out/
+
+# OS/editor noise
+.DS_Store
+*.log

@@ -1,19 +1,16 @@
-// Opens the same SQLite file the Python pipeline writes to. We only
-// ever read + do small status writes here (for ingest_jobs) - the
-// actual scraping/clustering writes are the pipeline's job.
-//
-// Uses Node's built-in node:sqlite instead of a native addon like
-// better-sqlite3, so there's nothing to compile on deploy.
+const fs = require("fs");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 
 const dbPath = path.resolve(__dirname, "..", process.env.DB_PATH || "../db/news.db");
 
+
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
 const db = new DatabaseSync(dbPath);
 db.exec("PRAGMA journal_mode = WAL");
 
-// Mirrors scraper/db.py so the API works even before the pipeline has
-// run for the first time (e.g. fresh deploy, empty database).
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS articles (
     id           TEXT PRIMARY KEY,

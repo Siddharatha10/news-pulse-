@@ -1,36 +1,52 @@
 # News Pulse
 
-A small system that pulls live articles from three news RSS feeds, groups
-related articles into topic clusters, and displays those clusters as a
-timeline.
+A full-stack system that pulls live articles from three news RSS feeds,
+extracts full article text, groups related articles into topic
+clusters using keyword-overlap analysis, and displays those clusters
+as an interactive timeline.
 
 Built for the Xponentium full-stack internship assessment.
 
-## Architecture
+**Live:**
+- Frontend: https://news-scrap.netlify.app
+- Backend API: https://news-pulse-2bog.onrender.com
 
-```
-scraper/    Python - pulls RSS feeds, extracts full article text,
-            clusters articles by topic, writes everything to SQLite
-backend/    Node.js / Express - reads the same SQLite file, serves
-            clusters/articles/timeline data, and can trigger the
-            scraper on demand
-frontend/   Next.js / React - the timeline UI
-db/         Shared SQLite database file (created on first run)
-```
+## Architecture
 
 The three services share one SQLite file (`db/news.db`) instead of
 each other's APIs. The scraper is the only writer; the backend reads
 from it and does small status writes for tracking ingest jobs.
 
-## Why SQLite
+## Why SQLite, not MongoDB/Postgres
 
-Postgres/MongoDB were both fine per the brief, but a single file that
-Python and Node can both open directly removes an entire layer of
-plumbing (no connection strings, no separate hosted service to spin
-up) for a dataset this size. It's a reasonable production choice too,
-up to a point — just not one that scales to concurrent writers.
+The scraper and the API both need to read/write the same dataset. A
+standalone hosted database (MongoDB Atlas, Postgres) adds a network
+hop, connection-string management, and a separate service to provision
+— overhead that buys nothing at this scale. SQLite as a single shared
+file lets both services read/write directly with zero additional
+infrastructure, while still being a completely valid production choice
+up to a reasonable scale. The trade-off (no concurrent multi-writer
+support) was a conscious decision, not an oversight.
 
-## Setup
+## Why Docker
+
+Render (and most hosts) expect one runtime per service. This project
+needs two — Python for scraping/clustering, Node for the API — sharing
+one database file. Docker builds a single custom image with both
+runtimes installed, so the scraper and backend share a filesystem
+instead of needing a network protocol between them. The root
+`Dockerfile` installs Python via `apt-get` on top of a Node base
+image, installs both sets of dependencies, and points both services at
+the same `DB_PATH`.
+
+## No third-party news API
+
+This project doesn't use any paid/third-party news API (NewsAPI,
+GNews, etc.) — it parses raw public RSS feeds directly (BBC, NPR, Al
+Jazeera), per the assessment brief. The Node backend is itself a REST
+API that the frontend consumes.
+
+## Setup (local development)
 
 ### 1. Scraper
 
@@ -102,19 +118,39 @@ threshold approach would handle synonymy better; a decay on cluster
 matching (e.g. don't match against clusters whose last article is
 weeks old) would help with the second problem.
 
-## What runs where (suggested deployment)
+## Deployment
 
 | Component | Platform | Why |
 |---|---|---|
-| Frontend | Vercel | Native Next.js support, generous free tier |
-| Backend | Render | Simple Node deploys, persistent disk for the SQLite file |
-| Scraper | GitHub Actions cron (or Render scheduled job) | Doesn't need to run continuously — just needs to run and write to the same disk/volume the backend reads |
-| Database | SQLite file on a Render persistent disk mounted to both backend and scraper | Avoids standing up a separate hosted DB for this scale |
+| Backend + scraper | Render (Docker Web Service) | One container, shared disk - avoids two services needing the same file |
+| Frontend | Netlify (static export) | No server-side rendering needed; ships as plain HTML/JS/CSS |
+| Ingestion trigger | The app's own "Refresh data" button (`POST /ingest/trigger`) | Reuses the same endpoint built for the UI - no separate scheduler needed |
 
-The important constraint: the scraper and backend need to see the
-**same** `db/news.db` file, so they should share a persistent volume
-if deployed as separate services, or the scraper should run as a
-scheduled job within the backend's own service/container.
+## Engineering notes: bugs found and fixed during deployment
+
+Real issues caught through actual testing, not assumed away:
+
+- **HTML leakage in clustering** - NPR's feed embeds raw `<img>` tags
+  in the summary field; left unhandled, tag attributes ("img", "src")
+  polluted cluster keywords. Fixed with an HTML-stripping
+  normalization step in `feeds.py`.
+- **CORS misconfiguration** - a wildcard-origin fallback silently broke
+  when passed as an array instead of a string to the `cors` package.
+- **Missing directory crash on deploy** - `node:sqlite` doesn't
+  auto-create a missing parent directory the way the Python side does;
+  fixed in `db.js`.
+- **Indefinite hang under real network conditions** - `feedparser`'s
+  network call has no timeout in this version, so an unresponsive feed
+  could block the whole pipeline forever. Fixed by fetching feed bytes
+  via `requests` (which does support a timeout) and only handing
+  feedparser the already-downloaded content.
+- **Silent dependency break** - a newer `lxml` release split
+  `html.clean` into a separate package, breaking `trafilatura` on a
+  fresh install. Fixed by pinning `lxml_html_clean` explicitly.
+- **Job observability** - subprocess output was initially fully
+  suppressed, making failures invisible in production logs. Changed to
+  inherit stdout/stderr, plus added a watchdog timeout so a stuck job
+  can't poll forever regardless of cause.
 
 ## Assumptions made
 
